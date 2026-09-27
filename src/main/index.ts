@@ -70,6 +70,7 @@ import {
 } from './local-web-port.ts'
 import { officialDshPackageVersion } from './official-dsh-bin.ts'
 import { permissionGrantedForContext, windowsAppUserModelId } from './permission-policy.ts'
+import { migrateLegacyConnectionSettings } from './settings-home-migration.ts'
 
 /** The built bundle sits at <project>/.build/main.mjs. */
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url))
@@ -98,6 +99,14 @@ function childHome(): string {
 
 /** The client's own settings document (connection configuration). */
 const SETTINGS_FILE = join(clientHome(), 'settings.json')
+
+/** Settings home used by pre-rename desktop builds. */
+function legacySettingsFile(): string {
+  return join(
+    devOverride('DSH_DESKTOP_LEGACY_HOME') ?? join(homedir(), '.bruc3van-dsh-desktop'),
+    'settings.json',
+  )
+}
 
 interface ClientSettings {
   /** A reusable fixed Web UI origin. Empty/absent means Smart mode only. */
@@ -235,6 +244,26 @@ function normalizeServerUrl(value: string | undefined): string | undefined {
     return undefined
   }
 }
+
+/**
+ * Preserve the connection selection made before the macOS app/home rename.
+ * Only connection fields are compatible across the two homes: copying a
+ * whole document would import stale update state or any future sensitive
+ * field. A successful write makes this naturally one-time, because the new
+ * document then has a valid connection choice.
+ */
+function migrateLegacySettingsHome(): void {
+  let legacy: unknown
+  try {
+    legacy = JSON.parse(readFileSync(legacySettingsFile(), 'utf8'))
+  } catch {
+    return
+  }
+  const migrated = migrateLegacyConnectionSettings(loadSettings(), legacy)
+  if (migrated !== undefined) saveSettings(migrated as ClientSettings)
+}
+
+migrateLegacySettingsHome()
 
 /**
  * Loopback origins are the client's own surfaces; anything else is a
