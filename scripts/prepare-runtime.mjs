@@ -33,12 +33,13 @@ const pnpmArgs = [
   '.runtime',
 ]
 
+// Corepack resolves POSIX pnpm from the repo's packageManager declaration.
 // Node 24 no longer launches Windows batch files directly with spawn(). Run
 // pnpm through cmd.exe there; every argument is a fixed project-owned value.
-const command = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'pnpm'
+const command = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'corepack'
 const args = process.platform === 'win32'
   ? ['/d', '/s', '/c', ['pnpm', ...pnpmArgs].join(' ')]
-  : pnpmArgs
+  : ['pnpm', ...pnpmArgs]
 const child = spawn(command, args, { cwd: APP_DIR, stdio: 'inherit' })
 
 const code = await new Promise((resolve, reject) => {
