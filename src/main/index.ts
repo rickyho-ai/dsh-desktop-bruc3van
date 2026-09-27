@@ -1608,6 +1608,10 @@ let localWebPortSaveEpoch = 0
 /** Avoid concurrent health probes and reload loops after sleep/wake churn. */
 let windowRecoveryInFlight = false
 let lastAutomaticReloadAt = 0
+/** A configured origin that was observed unavailable while its renderer stayed visible. */
+let unreachableConfiguredTarget: string | undefined
+/** A resume asks for one session re-bootstrap as soon as its target answers again. */
+let resumeRecoveryPending = false
 let windowHealthTimer: NodeJS.Timeout | undefined
 const AUTOMATIC_RELOAD_COOLDOWN_MS = 30_000
 const WINDOW_HEALTH_INTERVAL_MS = 60_000
@@ -1886,6 +1890,9 @@ async function handleProbedInstanceFailure(reason: string): Promise<void> {
 
 /**
  * Recover a renderer that went blank after a long idle or system resume.
+ * A configured Web UI also gets one re-bootstrap when it becomes reachable
+ * again after an observed outage (or after resume). That refreshes canonical
+ * session state even when Chromium kept a stale, visible renderer alive.
  * Two DOM samples avoid reloading a page during a normal React transition;
  * the runtime probe prevents turning a temporary server outage into a loop.
  */
@@ -1893,7 +1900,6 @@ async function recoverBlankWindow(reason: string, force = false): Promise<void> 
   const window = mainWindow
   const target = currentTarget()
   if (window === null || target === undefined || window.isDestroyed() || quitting || windowRecoveryInFlight) return
-  if (Date.now() - lastAutomaticReloadAt < AUTOMATIC_RELOAD_COOLDOWN_MS) return
   if (!force && (window.isMinimized() || !window.isVisible())) return
 
   windowRecoveryInFlight = true
@@ -1919,10 +1925,35 @@ async function recoverBlankWindow(reason: string, force = false): Promise<void> 
         if (window !== mainWindow || await hasVisiblePageContent(window)) return
       }
       if (window !== mainWindow || window.isDestroyed()) return
+      if (Date.now() - lastAutomaticReloadAt < AUTOMATIC_RELOAD_COOLDOWN_MS) return
       lastAutomaticReloadAt = Date.now()
       console.warn('[desktop] reloading blank Web UI (' + reason + ')')
       window.webContents.reload()
       return
+    }
+    // Connect mode keeps the configured origin even while it is unavailable.
+    // Remember that transition independently of renderer visibility: a stale
+    // but visible official page otherwise has no reason to reload when the
+    // server comes back. `configuredTarget` excludes a managed child and the
+    // probe branch above owns adopted-instance recovery.
+    const configuredConnection = configuredTarget === target && !probeConnected
+    const resumeRecovery = resumeRecoveryPending && configuredConnection
+    const recoveredConfiguredTarget = unreachableConfiguredTarget === target
+    if (configuredConnection) {
+      if (await probeWebUi(target) === undefined) {
+        unreachableConfiguredTarget = target
+        return
+      }
+      if (window !== mainWindow || window.isDestroyed() || currentTarget() !== target) return
+      if (recoveredConfiguredTarget || resumeRecovery) {
+        if (Date.now() - lastAutomaticReloadAt < AUTOMATIC_RELOAD_COOLDOWN_MS) return
+        unreachableConfiguredTarget = undefined
+        resumeRecoveryPending = false
+        lastAutomaticReloadAt = Date.now()
+        console.warn('[desktop] reloading reconnected Web UI (' + reason + ')')
+        window.webContents.reload()
+        return
+      }
     }
     if (!force && await hasVisiblePageContent(window)) return
     if (!force) {
@@ -1930,6 +1961,7 @@ async function recoverBlankWindow(reason: string, force = false): Promise<void> 
       if (window !== mainWindow || await hasVisiblePageContent(window)) return
     }
     if (await probeWebUi(target) === undefined || window !== mainWindow || window.isDestroyed()) return
+    if (Date.now() - lastAutomaticReloadAt < AUTOMATIC_RELOAD_COOLDOWN_MS) return
 
     lastAutomaticReloadAt = Date.now()
     console.warn('[desktop] reloading blank Web UI (' + reason + ')')
@@ -5801,7 +5833,14 @@ if (!gotLock) {
     // After the locale watcher: the notice's wording follows the Web UI's
     // language setting, and this is the first point where that is settled.
     scheduleLegacyBundleNotice()
-    powerMonitor.on('resume', () => { scheduleWindowHealthCheck('system resume', 3_000) })
+    powerMonitor.on('resume', () => {
+      // Resume can leave a still-painted Chromium document attached to a new
+      // Web UI session. Defer the single re-bootstrap until the origin proves
+      // reachable; the shared cooldown keeps repeated wake events from
+      // turning into a reload storm.
+      resumeRecoveryPending = true
+      scheduleWindowHealthCheck('system resume', 3_000)
+    })
     windowHealthTimer = setInterval(() => { void recoverBlankWindow('periodic health check') }, WINDOW_HEALTH_INTERVAL_MS)
     windowHealthTimer.unref()
     schedulePeriodicAutoUpdateChecks()

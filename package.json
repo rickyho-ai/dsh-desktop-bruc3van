@@ -43,6 +43,7 @@
     "shot:readme": "node scripts/shot.mjs --readme",
     "audit": "node scripts/audit.mjs",
     "check:connection": "node scripts/check-connection-switch.mjs",
+    "check:session-recovery": "node scripts/check-session-recovery.mjs",
     "check:installed-runtime": "node scripts/check-installed-runtime.mjs",
     "check:runtime-resolution": "node scripts/check-runtime-resolution.mjs",
     "check:bundled-plugin": "node scripts/check-bundled-plugin.mjs",
