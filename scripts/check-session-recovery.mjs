@@ -47,6 +47,32 @@ const electronEnv = sanitizedElectronEnv()
 electronEnv.DSH_HOME = join(checkHome, 'dsh')
 electronEnv.DSH_DESKTOP_HOME = desktopHome
 
+const ELECTRON_LAUNCH_TIMEOUT_MS = 20_000
+const FIRST_WINDOW_TIMEOUT_MS = 20_000
+const FIXTURE_TITLE_TIMEOUT_MS = 10_000
+
+function withTimeout(promise, timeoutMs, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+    timer.unref()
+    promise.then(
+      value => { clearTimeout(timer); resolve(value) },
+      error => { clearTimeout(timer); reject(error) },
+    )
+  })
+}
+
+async function stage(name, timeoutMs, action) {
+  console.error('[session-recovery] ' + name + ' (deadline ' + String(timeoutMs) + 'ms)')
+  try {
+    return await withTimeout(action(), timeoutMs, name + ' exceeded ' + String(timeoutMs) + 'ms')
+  } catch (error) {
+    const message = '[session-recovery] ' + name + ' failed: ' + error.message
+    console.error(message)
+    throw new Error(message)
+  }
+}
+
 async function loadCount(window) {
   return await window.evaluate(() => Number(sessionStorage.loads || 0))
 }
@@ -67,12 +93,19 @@ async function waitForLoadCount(window, expected, timeoutMs = 10_000) {
 
 let app
 async function launchFixtureApp() {
-  app = await electron.launch({
+  app = await stage('Electron launch', ELECTRON_LAUNCH_TIMEOUT_MS, () => electron.launch({
     args: [join(APP_DIR, '.build', 'main.mjs'), '--user-data-dir=' + join(checkHome, 'chromium')],
     env: electronEnv,
-  })
-  const window = await app.firstWindow()
-  await window.waitForFunction(() => document.title === 'Session Recovery Fixture', null, { timeout: 10_000 })
+    timeout: ELECTRON_LAUNCH_TIMEOUT_MS,
+  }))
+  const window = await stage('first window', FIRST_WINDOW_TIMEOUT_MS, () => app.firstWindow({
+    timeout: FIRST_WINDOW_TIMEOUT_MS,
+  }))
+  await stage('fixture-title readiness', FIXTURE_TITLE_TIMEOUT_MS, () => window.waitForFunction(
+    () => document.title === 'Session Recovery Fixture',
+    null,
+    { timeout: FIXTURE_TITLE_TIMEOUT_MS },
+  ))
   return window
 }
 
